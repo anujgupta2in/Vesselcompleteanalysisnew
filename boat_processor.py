@@ -44,9 +44,12 @@ class BoatSystemProcessor:
             )
             self.result_dfBoat.reset_index(drop=True, inplace=True)
 
-            # Detect title column
+            # Detect title column, including merged suffixes
             possible_titles = ['Title', 'J3 Job Title', 'Task Description', 'Job Title']
             title_col = next((col for col in possible_titles if col in self.result_dfBoat.columns), None)
+            if title_col is None:
+                suffixed_titles = [f"{base}_filtered" for base in possible_titles] + [f"{base}_ref" for base in possible_titles]
+                title_col = next((col for col in suffixed_titles if col in self.result_dfBoat.columns), None)
             if title_col is None:
                 raise ValueError("No suitable title column found in merged boat data for pivot index.")
 
