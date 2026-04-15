@@ -44,16 +44,14 @@ class BoatSystemProcessor:
             )
             self.result_dfBoat.reset_index(drop=True, inplace=True)
 
-            # Detect title column, including merged suffixes.
-            # Prefer the reference title if both filtered and reference columns exist.
-            possible_titles = ['Title', 'J3 Job Title', 'Task Description', 'Job Title']
-            title_col = next((col for col in possible_titles if col in self.result_dfBoat.columns), None)
-            if title_col is None:
-                ref_titles = [f"{base}_ref" for base in possible_titles]
-                filtered_titles = [f"{base}_filtered" for base in possible_titles]
-                title_col = next((col for col in ref_titles if col in self.result_dfBoat.columns), None)
-                if title_col is None:
-                    title_col = next((col for col in filtered_titles if col in self.result_dfBoat.columns), None)
+            # Detect title column, including merged suffixes and case variations.
+            possible_titles = ['title', 'j3 job title', 'task description', 'job title']
+            title_col = None
+            for col in self.result_dfBoat.columns:
+                lower_col = col.lower()
+                if any(title in lower_col for title in possible_titles):
+                    title_col = col
+                    break
             if title_col is None:
                 raise ValueError("No suitable title column found in merged boat data for pivot index.")
 
