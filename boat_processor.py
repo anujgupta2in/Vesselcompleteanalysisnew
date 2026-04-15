@@ -33,7 +33,7 @@ class BoatSystemProcessor:
             self.filtered_dfBoatjobs['Job Codecopy'] = self.filtered_dfBoatjobs['Job Codecopy'].apply(self.safe_convert_to_string)
 
             # Ensure reference codes are string
-            dfBoats['UI Job Code'] = dfBoats['UI Job Code'].astype(str)
+            dfBoats['UI Job Code'] = dfBoats['UI Job Code'].astype(str).str.strip()
 
             # Merge data
             self.result_dfBoat = self.filtered_dfBoatjobs.merge(
@@ -44,14 +44,15 @@ class BoatSystemProcessor:
             )
             self.result_dfBoat.reset_index(drop=True, inplace=True)
 
-            # Detect title column, including merged suffixes and case variations.
+            # Detect title column
             possible_titles = ['title', 'j3 job title', 'task description', 'job title']
-            title_col = None
-            for col in self.result_dfBoat.columns:
-                lower_col = col.lower()
-                if any(title in lower_col for title in possible_titles):
-                    title_col = col
-                    break
+            title_col = next((col for col in self.result_dfBoat.columns if col.lower() in possible_titles), None)
+            if title_col is None:
+                for col in self.result_dfBoat.columns:
+                    lower_col = col.lower()
+                    if any(title in lower_col for title in possible_titles):
+                        title_col = col
+                        break
             if title_col is None:
                 raise ValueError("No suitable title column found in merged boat data for pivot index.")
 
@@ -62,8 +63,10 @@ class BoatSystemProcessor:
                 values='Job Codecopy',
                 aggfunc='count'
             )
-            pivot_table = pivot_table.fillna(-1).astype(int)
-            pivot_table = pivot_table.where(pivot_table != -1, '')
+            pivot_table.replace(np.nan, '', inplace=True)
+            pivot_table.replace('', -1, inplace=True)
+            pivot_table = pivot_table.astype(int)
+            pivot_table = pivot_table.applymap(self.format_blank)
 
             self.pivot_table_resultBoatJobs = pivot_table
             self.styled_pivot_table_resultBoatJobs = self.pivot_table_resultBoatJobs.style\
