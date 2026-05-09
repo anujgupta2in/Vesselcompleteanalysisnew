@@ -57,7 +57,7 @@ class IncineratorSystemProcessor:
             pivot_table.replace('', -1, inplace=True)
             pivot_table = pivot_table.fillna(0)
             pivot_table = pivot_table.astype(int)
-            pivot_table = pivot_table.applymap(self.format_blank)
+            pivot_table = pivot_table.map(self.format_blank)
 
             self.pivot_table_resultIncinJobs = pivot_table
             self.styled_pivot_table_resultIncinJobs = self.pivot_table_resultIncinJobs.style\
