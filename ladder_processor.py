@@ -55,8 +55,10 @@ class LadderSystemProcessor:
                 values='Job Codecopy',
                 aggfunc='count'
             )
-            pivot_table = pivot_table.fillna(-1).astype(int)
-            pivot_table = pivot_table.where(pivot_table != -1, '')
+            pivot_table.replace(np.nan, '', inplace=True)
+            pivot_table.replace('', -1, inplace=True)
+            pivot_table = pivot_table.astype(int)
+            pivot_table = pivot_table.map(self.format_blank)
 
             self.pivot_table_resultLadderJobs = pivot_table
             self.styled_pivot_table_resultLadderJobs = self.pivot_table_resultLadderJobs.style.set_table_styles([
