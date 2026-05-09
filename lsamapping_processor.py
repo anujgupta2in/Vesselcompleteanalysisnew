@@ -49,8 +49,9 @@ class LSAMappingProcessor:
 
             self.pivot_table_resultlsaJobs = pivot_raw.replace(0, '').map(self.format_blank)
 
-            # Optional: keep styled version for UI display
-            self.pivot_table_resultlsaJobs_styled = pivot_raw.style.applymap(self.highlight_one)
+            # Optional: keep styled version for UI display.
+            # Use style.map instead of applymap for compatibility with newer pandas versions.
+            self.pivot_table_resultlsaJobs_styled = pivot_raw.style.map(self.highlight_one)
 
             total_raw = self.result_dflsa.pivot_table(
                 index='Title',
