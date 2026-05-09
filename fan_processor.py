@@ -46,7 +46,7 @@ class FanSystemProcessor:
                 columns='Title',
                 values='Job Codecopy',
                 aggfunc='count'
-            ).replace(np.nan, '', inplace=False).replace('', -1).astype(int).applymap(self.format_blank)
+            ).replace(np.nan, '', inplace=False).replace('', -1).astype(int).map(self.format_blank)
 
             self.styled_pivot_table_resultfanJobs = self.pivot_table_resultfanJobs.style\
                 .set_table_styles([
@@ -61,7 +61,7 @@ class FanSystemProcessor:
                 index=['Machinery Location', 'Sub Component Location'],
                 values='Title',
                 aggfunc='count'
-            ).replace(np.nan, '', inplace=False).replace('', -1).astype(int).applymap(self.format_blank)
+            ).replace(np.nan, '', inplace=False).replace('', -1).astype(int).map(self.format_blank)
 
             self.styled_pivot_table_fan = self.pivot_table_fan.style\
                 .set_table_styles([
