@@ -49,7 +49,7 @@ class MiscSystemProcessor:
                 columns='Function',
                 values='Job Codecopy',
                 aggfunc='count'
-            ).replace(np.nan, '', inplace=False).replace('', -1).astype(int).applymap(self.format_blank)
+            ).replace(np.nan, '', inplace=False).replace('', -1).astype(int).map(self.format_blank)
 
             self.styled_pivot_table_resultmiscJobs = self.pivot_table_resultmiscJobs.style\
                 .set_table_styles([
@@ -68,7 +68,7 @@ class MiscSystemProcessor:
             self.pivot_table_resultmiscJobstotal = self.pivot_table_resultmiscJobstotal.replace(np.nan, '', inplace=False)
             self.pivot_table_resultmiscJobstotal = self.pivot_table_resultmiscJobstotal.replace('', -1)
             self.pivot_table_resultmiscJobstotal = self.pivot_table_resultmiscJobstotal.astype(int)
-            self.pivot_table_resultmiscJobstotal = self.pivot_table_resultmiscJobstotal.applymap(self.format_blank)
+            self.pivot_table_resultmiscJobstotal = self.pivot_table_resultmiscJobstotal.map(self.format_blank)
 
             self.styled_pivot_table_resultmiscJobstotal = self.pivot_table_resultmiscJobstotal.style\
                 .set_table_styles([
