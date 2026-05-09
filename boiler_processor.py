@@ -53,7 +53,7 @@ class BoilerSystemProcessor:
             pivot_table.replace(np.nan, '', inplace=True)
             pivot_table.replace('', -1, inplace=True)
             pivot_table = pivot_table.astype(int)
-            pivot_table = pivot_table.applymap(self.format_blank)
+            pivot_table = pivot_table.map(self.format_blank)
 
             self.pivot_table_resultboilerJobs = pivot_table
             self.styled_pivot_table_resultboilerJobs = self.pivot_table_resultboilerJobs.style\
