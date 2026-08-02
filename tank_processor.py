@@ -91,11 +91,8 @@ class TankSystemProcessor:
                 pivot_table.replace('', -1, inplace=True)
                 pivot_table = pivot_table.astype(int)
                 
-                # Compatibility check for pandas DataFrame map vs applymap
-                if hasattr(pivot_table, 'map'):
-                    pivot_table = pivot_table.map(self.format_blank)
-                else:
-                    pivot_table = pivot_table.applymap(self.format_blank)
+                # Standard and robust mapping that works across all Pandas versions
+                pivot_table = pivot_table.apply(lambda col: col.map(self.format_blank))
 
             self.pivot_table_resulttanksJobs = pivot_table
             
