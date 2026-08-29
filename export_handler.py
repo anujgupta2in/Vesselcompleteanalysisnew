@@ -497,7 +497,7 @@ class ExportHandler:
                                     val = float(val)
                                     if val == 0:
                                         return "background-color: #dc3545"
-                                    elif val == 1:
+                                    elif 1 <= val <= 5:
                                         return "background-color: #28a745"
                                     elif val > 5:
                                         return "background-color: #fd7e14"
