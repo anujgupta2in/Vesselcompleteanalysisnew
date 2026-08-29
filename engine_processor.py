@@ -2,6 +2,20 @@ import pandas as pd
 import numpy as np
 import re
 
+EQUIVALENT_CODE_GROUPS = [
+    {'860', '861', '862'},       # Fuel Valve Overhaul / Maintenance
+    {'730', '805'},             # Stuffing Box Overhaul
+    {'896', '890'},             # Exhaust Valve Overhaul
+    {'715', '708', '707'},       # Turbocharger Overhaul
+    {'977', '6672'},            # Auxiliary Blower Overhaul
+    {'2196', '2191'},           # AE Fuel Valve Overhaul
+    {'2223', '2224'},           # AE Cylinder Head Overhaul
+    {'2157', '6619'},           # AE Piston Overhaul
+    {'2127', '2126', '5401'},    # AE Turbocharger Overhaul
+    {'2187', '2179'},           # AE Governor Overhaul
+    {'2204', '2148'}            # AE Foundation Bolts Overhaul
+]
+
 def extract_units(job_data, unit_col):
     """Extract and sort unique units from the data."""
     try:
@@ -368,9 +382,24 @@ def process_engine_data(data, ref_sheet_path=None, engine_type=None):
 
                 ref_df = pd.read_excel(ref_sheet_path, sheet_name=sheet_name)
                 ref_df['UI Job Code'] = ref_df['UI Job Code'].astype(str)
+                # Deduplicate reference sheet on UI Job Code to prevent double-counting in merge
+                ref_df = ref_df.drop_duplicates(subset=['UI Job Code'])
 
                 filtered_dfMEjobs = data[data['Machinery Location'].str.contains('Main Engine', na=False)].copy()
                 filtered_dfMEjobs['Job Codecopy'] = filtered_dfMEjobs['Job Code'].astype(str)
+
+                # Dynamically map equivalent job codes based on ref_df
+                ref_codes = set(ref_df['UI Job Code'].unique())
+                code_mapping = {}
+                for group in EQUIVALENT_CODE_GROUPS:
+                    ref_codes_in_group = group & ref_codes
+                    if ref_codes_in_group:
+                        target_code = list(ref_codes_in_group)[0]
+                        for code in group:
+                            if code not in ref_codes:
+                                code_mapping[code] = target_code
+                
+                filtered_dfMEjobs['Job Codecopy'] = filtered_dfMEjobs['Job Codecopy'].replace(code_mapping)
 
                 result_dfME = filtered_dfMEjobs.merge(ref_df, left_on='Job Codecopy', right_on='UI Job Code', suffixes=('_filtered', '_ref'))
 
