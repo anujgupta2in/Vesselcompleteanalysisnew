@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from engine_processor import EQUIVALENT_CODE_GROUPS
 
 class AuxiliaryEngineProcessor:
     def __init__(self):
@@ -162,6 +163,21 @@ class AuxiliaryEngineProcessor:
 
             ref_df = pd.read_excel(ref_sheet, sheet_name='AE Jobs')
             ref_df['UI Job Code'] = ref_df['UI Job Code'].astype(str)
+            # Deduplicate reference sheet on UI Job Code to prevent double-counting in merge
+            ref_df = ref_df.drop_duplicates(subset=['UI Job Code'])
+
+            # Dynamically map equivalent job codes based on ref_df
+            ref_codes = set(ref_df['UI Job Code'].unique())
+            code_mapping = {}
+            for group in EQUIVALENT_CODE_GROUPS:
+                ref_codes_in_group = group & ref_codes
+                if ref_codes_in_group:
+                    target_code = list(ref_codes_in_group)[0]
+                    for code in group:
+                        if code not in ref_codes:
+                            code_mapping[code] = target_code
+            
+            filtered_df['Job Codecopy'] = filtered_df['Job Codecopy'].replace(code_mapping)
 
             result_df = filtered_df.merge(
                 ref_df,
