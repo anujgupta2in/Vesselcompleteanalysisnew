@@ -100,7 +100,7 @@ def color_binary_cells(val):
         val = int(val)
         if val == 0:
             return 'background-color: #f8d7da; color: #721c24'  # red
-        elif val == 1:
+        elif 1 <= val <= 5:
             return 'background-color: #d4edda; color: #155724'  # green
         elif val > 5:
             return 'background-color: #ffeeba; color: #856404'  # orange/yellow
