@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from engine_processor import process_engine_data
+from engine_processor import process_engine_data, find_cylinder_gaps
 from auxiliary_engine_processor import AuxiliaryEngineProcessor
 from purifier_processor import PurifierProcessor
 from bwts_processor import BWTSProcessor
@@ -345,43 +345,8 @@ if uploaded_file is not None:
 
                     # ➤ Safely generate purifier pivot and missing job results for HTML export
                     try:
-                        filtered_dfpurifierjobs = data[data['Machinery Location'].str.contains('Purifier', case=False, na=False)].copy()
-                        filtered_dfpurifierjobs['Job Codecopy'] = filtered_dfpurifierjobs['Job Code'].astype(str)
-
-                        ref_sheet_names = pd.ExcelFile(ref_sheet).sheet_names
-                        purifier_sheet = 'Purifiers' if 'Purifiers' in ref_sheet_names else next(
-                            (s for s in ref_sheet_names if 'Purifier' in s.lower() or 'PU' in s), ref_sheet_names[0]
-                        )
-                        dfpurifiers = pd.read_excel(ref_sheet, sheet_name=purifier_sheet)
-
-                        job_code_col = next(
-                            (col for col in ['UI Job Code', 'Job Code', 'JobCode', 'Code'] if col in dfpurifiers.columns), None
-                        )
-
-                        if job_code_col:
-                            dfpurifiers[job_code_col] = dfpurifiers[job_code_col].astype(str)
-                            result_dfpurifiers = filtered_dfpurifierjobs.merge(
-                                dfpurifiers,
-                                left_on='Job Codecopy',
-                                right_on=job_code_col,
-                                suffixes=('_filtered', '_ref')
-                            )
-                            title_col = next(
-                                (col for col in ['Title', 'J3 Job Title', 'Task Description', 'Job Title'] if col in result_dfpurifiers.columns),
-                                None
-                            )
-                            if title_col and 'Machinery Location' in result_dfpurifiers.columns:
-                                pivot_table_resultpurifierJobs = result_dfpurifiers.pivot_table(
-                                    index=title_col,
-                                    columns='Machinery Location',
-                                    values='Job Codecopy',
-                                    aggfunc='count'
-                                ).fillna(0).astype(int)
-
-                            missingjobspurifierresult = dfpurifiers[
-                                ~dfpurifiers[job_code_col].isin(filtered_dfpurifierjobs['Job Codecopy'])
-                            ]
-
+                        pivot_table_resultpurifierJobs = purifier_processor.create_reference_pivot(data, ref_sheet)
+                        missingjobspurifierresult = purifier_processor.process_reference_data(data, ref_sheet)
                     except Exception as purifier_error:
                         print(f"❌ Purifier Analysis export failed: {purifier_error}")
                         pivot_table_resultpurifierJobs = pd.DataFrame()
@@ -1511,7 +1476,8 @@ if uploaded_file is not None:
                             ref_pivot_table,
                             missing_jobs,
                             component_status,
-                            missing_count
+                            missing_count,
+                            find_cylinder_gaps(cylinder_pivot_table)
                         ],
                         "Auxiliary Engine": [
                             aux_task_count,
@@ -1961,6 +1927,17 @@ if uploaded_file is not None:
                 styled_cylinder = cylinder_pivot_table.style.map(color_binary_cells)
                 st.dataframe(styled_cylinder, use_container_width=True)
 
+                # Cylinders whose jobs differ from the other cylinders
+                st.subheader("Cylinder Unit Gaps for Main Engine")
+                me_cylinder_gaps = find_cylinder_gaps(cylinder_pivot_table)
+                if not me_cylinder_gaps.empty:
+                    st.warning(f"{len(me_cylinder_gaps)} cylinder unit/component combination(s) differ from the other cylinders.")
+                    st.dataframe(me_cylinder_gaps, use_container_width=True)
+                else:
+                    st.success("All cylinder units have the same jobs.")
+            else:
+                st.info("No 'Cylinder Unit#' locations found for the Main Engine.")
+
             if ref_sheet is not None and ref_pivot_table is not None:
                 st.subheader("Reference Analysis Main Engine")
                 styled_ref_pivot = ref_pivot_table.style.map(color_binary_cells)
@@ -2218,124 +2195,34 @@ if uploaded_file is not None:
                     # Get missing jobs data
                     missing_jobs_purifier = pu_processor.process_reference_data(data, ref_sheet)
 
-                    # Generate result_dfpurifiers data
-                    # Create a copy of data to avoid modifications to original
-                    data_copy = data.copy()
-
-                    # Filter for purifier jobs
-                    filtered_dfpurifierjobs = data_copy[data_copy['Machinery Location'].str.contains('Purifier', case=False, na=False)].copy()
-
-                    # Read the reference sheet
-                    ref_sheet_names = pd.ExcelFile(ref_sheet).sheet_names
-
-                    # Look for 'Purifiers' sheet specifically first
-                    purifier_sheet = 'Purifiers' if 'Purifiers' in ref_sheet_names else None
-
-                    # If not found, try to find any sheet with 'Purifier' or 'PU' in the name
-                    if purifier_sheet is None:
-                        for sheet in ref_sheet_names:
-                            if 'Purifier' in sheet.lower() or 'PU' in sheet:
-                                purifier_sheet = sheet
-                                break
-
-                    # If still no purifier-specific sheet, use the first sheet
-                    if purifier_sheet is None:
-                        purifier_sheet = ref_sheet_names[0]
-                        print(f"No purifier sheet found in app.py, using the first sheet: {purifier_sheet}")
-                    else:
-                        print(f"Using reference sheet in app.py: {purifier_sheet}")
-
-                    dfpurifiers = pd.read_excel(ref_sheet, sheet_name=purifier_sheet)
-
-                    # Create Job Codecopy column
-                    if 'Job Code' in filtered_dfpurifierjobs.columns:
-                        filtered_dfpurifierjobs['Job Codecopy'] = filtered_dfpurifierjobs['Job Code'].astype(str)
-
-                        # Display Reference Jobs for Purifiers
-                        st.subheader("Reference Jobs for Purifiers")
-                        if not filtered_dfpurifierjobs.empty and not dfpurifiers.empty:
-                            try:
-                                # Display the columns in the reference data (for debugging)
-                                print(f"Columns in reference data: {dfpurifiers.columns.tolist()}")
-
-                                # Check which column to use for job code in reference data
-                                job_code_col = None
-                                for possible_col in ['UI Job Code', 'Job Code', 'JobCode', 'Code']:
-                                    if possible_col in dfpurifiers.columns:
-                                        job_code_col = possible_col
-                                        print(f"Found job code column: {job_code_col}")
-                                        break
-
-                                if job_code_col is None:
-                                    st.error(f"No job code column found in reference data. Available columns: {', '.join(dfpurifiers.columns.tolist())}")
-
-                                if job_code_col is not None:
-                                    # Convert both columns to string to avoid type mismatch
-                                    filtered_dfpurifierjobs['Job Codecopy'] = filtered_dfpurifierjobs['Job Codecopy'].astype(str)
-                                    dfpurifiers[job_code_col] = dfpurifiers[job_code_col].astype(str)
-
-                                    # Print sample values from both columns for debugging
-                                    print(f"Sample Job Codecopy values: {filtered_dfpurifierjobs['Job Codecopy'].iloc[:5].tolist()}")
-                                    print(f"Sample {job_code_col} values: {dfpurifiers[job_code_col].iloc[:5].tolist()}")
-
-                                    # Merge filtered_dfpurifierjobs with dfpurifiers on matching job codes
-                                    result_dfpurifiers = filtered_dfpurifierjobs.merge(
-                                        dfpurifiers, 
-                                        left_on='Job Codecopy', 
-                                        right_on=job_code_col, 
-                                        suffixes=('_filtered', '_ref')
+                    # Display Reference Jobs for Purifiers
+                    st.subheader("Reference Jobs for Purifiers")
+                    try:
+                        pivot_table_resultpurifierJobs = pu_processor.create_reference_pivot(data, ref_sheet)
+                        if not pivot_table_resultpurifierJobs.empty:
+                            styled_pivotpurifier = pivot_table_resultpurifierJobs.style.map(color_binary_cells)
+                            st.dataframe(
+                                styled_pivotpurifier,
+                                use_container_width=True,
+                                column_config={
+                                    pivot_table_resultpurifierJobs.index.name: st.column_config.TextColumn(
+                                        label=pivot_table_resultpurifierJobs.index.name,
+                                        width="large"
                                     )
+                                }
+                            )
 
-                                    # Reset index of the result DataFrame
-                                    result_dfpurifiers.reset_index(drop=True, inplace=True)
-
-                                    # Check for title column with different possible names
-                                    title_col = None
-                                    for possible_title in ['Title', 'J3 Job Title', 'Task Description', 'Job Title']:
-                                        if possible_title in result_dfpurifiers.columns:
-                                            title_col = possible_title
-                                            print(f"Found title column: {title_col}")
-                                            break
-
-                                    # Create pivot table if we have the necessary columns
-                                    if title_col is not None and 'Machinery Location' in result_dfpurifiers.columns:
-                                        pivot_table_resultpurifierJobs = result_dfpurifiers.pivot_table(
-                                            index=title_col, 
-                                            columns='Machinery Location', 
-                                            values='Job Codecopy', 
-                                            aggfunc='count'
-                                            ).fillna(0).astype(int)  # Fill NaNs with 0s and convert to int
-
-                                        # Apply color formatting only to numeric part
-                                        # numeric_cols = pivot_table_resultpurifierJobs.select_dtypes(include=[np.number]).columns
-                                        styled_pivotpurifier = pivot_table_resultpurifierJobs.style.map(color_binary_cells)
-
-                                        # Display styled dataframe
-                                        st.dataframe(
-                                            styled_pivotpurifier,
-                                            use_container_width=True,
-                                            column_config={
-                                                pivot_table_resultpurifierJobs.index.name or title_col: st.column_config.TextColumn(
-                                                    label=title_col,
-                                                    width="large"
-                                                )
-                                            }
-                                        )
-
-                                        # Provide download option
-                                        csv_pivot = pivot_table_resultpurifierJobs.to_csv()
-                                        st.download_button(
-                                            label="Download Reference Jobs Pivot Table CSV",
-                                            data=csv_pivot,
-                                            file_name="purifier_ref_jobs_pivot.csv",
-                                            mime="text/csv"
-                                        )
-                                else:
-                                    st.info("Required columns for pivot table not found in merged data.")
-                            except Exception as e:
-                                st.error(f"Error creating purifier reference pivot table: {str(e)}")
+                            # Provide download option
+                            st.download_button(
+                                label="Download Reference Jobs Pivot Table CSV",
+                                data=pivot_table_resultpurifierJobs.to_csv(),
+                                file_name="purifier_ref_jobs_pivot.csv",
+                                mime="text/csv"
+                            )
                         else:
                             st.info("No reference job data available for purifiers.")
+                    except Exception as e:
+                        st.error(f"Error creating purifier reference pivot table: {str(e)}")
 
                     # Display Missing Jobs for Purifiers
                     st.subheader("Missing Jobs for Purifiers")

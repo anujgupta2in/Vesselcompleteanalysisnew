@@ -2,19 +2,7 @@ import pandas as pd
 import numpy as np
 import re
 
-EQUIVALENT_CODE_GROUPS = [
-    {'860', '861', '862'},       # Fuel Valve Overhaul / Maintenance
-    {'730', '805'},             # Stuffing Box Overhaul
-    {'896', '890'},             # Exhaust Valve Overhaul
-    {'715', '708', '707'},       # Turbocharger Overhaul
-    {'977', '6672'},            # Auxiliary Blower Overhaul
-    {'2196', '2191'},           # AE Fuel Valve Overhaul
-    {'2223', '2224'},           # AE Cylinder Head Overhaul
-    {'2157', '6619'},           # AE Piston Overhaul
-    {'2127', '2126', '5401'},    # AE Turbocharger Overhaul
-    {'2187', '2179'},           # AE Governor Overhaul
-    {'2204', '2148'}            # AE Foundation Bolts Overhaul
-]
+from auxiliary_engine_processor import AuxiliaryEngineProcessor
 
 def extract_units(job_data, unit_col):
     """Extract and sort unique units from the data."""
@@ -24,12 +12,34 @@ def extract_units(job_data, unit_col):
         return []
 
 def format_unit_data(unit_data):
-    """Format unit data for display."""
+    """Format unit data for display, showing the most critical job when a unit has several."""
     try:
-        last_done_date = unit_data['Last Done Date'].dropna().astype(str).iloc[0] if not unit_data['Last Done Date'].dropna().empty else "No Date"
-        last_done_running_hours = unit_data['Last Done Running Hours'].dropna().astype(str).iloc[0] if not unit_data['Last Done Running Hours'].dropna().empty else "No RH"
-        remaining_hours = unit_data['Remaining Running Hours'].dropna().astype(str).iloc[0] if not unit_data['Remaining Running Hours'].dropna().empty else "No RH"
-        return f"Date: {last_done_date}\nRH: {last_done_running_hours}\nRemaining Hours: {remaining_hours}"
+        remaining = pd.to_numeric(unit_data['Remaining Running Hours'], errors='coerce')
+        # PMS exports dates as dd-mm-yyyy
+        last_done = pd.to_datetime(unit_data['Last Done Date'], errors='coerce', dayfirst=True)
+        # Most critical = lowest remaining hours, then oldest last done date
+        ordered = unit_data.assign(_remaining=remaining, _last_done=last_done).sort_values(
+            ['_remaining', '_last_done'], na_position='last'
+        )
+        worst = ordered.iloc[0]
+
+        def show(value, empty):
+            if pd.isna(value) or str(value).strip() == '':
+                return empty
+            if isinstance(value, float) and value.is_integer():
+                return str(int(value))
+            return str(value)
+
+        text = (f"Date: {show(worst['Last Done Date'], 'No Date')}\n"
+                f"RH: {show(worst['Last Done Running Hours'], 'No RH')}\n"
+                f"Remaining Hours: {show(worst['Remaining Running Hours'], 'No RH')}")
+
+        # e.g. two fuel valves in one cylinder: say which one is the most critical
+        items = unit_data['Sub Component Location'].dropna().nunique()
+        if items > 1 and ordered['_remaining'].nunique(dropna=False) > 1:
+            component = str(worst['Sub Component Location']).split('>')[-1].strip()
+            text += f"\nMost critical of {items}: {component}"
+        return text
     except Exception:
         return "Data formatting error"
 
@@ -38,11 +48,14 @@ def process_job_code_dynamic(data, job_codes, job_description, unit_pattern=r'Un
     if not isinstance(job_codes, list):
         job_codes = [job_codes]
     try:
-        job_data = data[data['Job Code'].isin(job_codes)][
-            ['Frequency', 'Last Done Date', 'Last Done Running Hours', 
+        job_data = data[
+            data['Job Code'].isin(job_codes)
+            & data['Machinery Location'].str.contains('Main Engine', na=False)
+        ][
+            ['Frequency', 'Last Done Date', 'Last Done Running Hours',
              'Remaining Running Hours', 'Sub Component Location']
-        ]
-        job_data['Unit'] = job_data['Sub Component Location'].str.extract(unit_pattern)
+        ].copy()
+        job_data['Unit'] = job_data['Sub Component Location'].str.extract(unit_pattern, expand=False)
         structured_data = pd.DataFrame({
             'Job Title': [job_description],
             'Frequency': [job_data['Frequency'].iloc[0] if not job_data.empty else "No Frequency"]
@@ -287,7 +300,24 @@ def get_components_for_engine_type(engine_type):
             'Injection Control Unit - Main Engine'
         ]
     }
-    return components.get(engine_type, components["Normal Main Engine"])
+    # Some lists repeat a component; keep each once so it isn't counted missing twice
+    return list(dict.fromkeys(components.get(engine_type, components["Normal Main Engine"])))
+
+def find_cylinder_gaps(cylinder_pivot_table):
+    """List cylinder units whose job count for a component differs from the other cylinders."""
+    columns = ['Cylinder Unit', 'Component', 'Jobs on this Unit', 'Jobs on Most Units']
+    if cylinder_pivot_table is None or cylinder_pivot_table.empty:
+        return pd.DataFrame(columns=columns)
+
+    gaps = []
+    for component in cylinder_pivot_table.columns.drop('Cylinder Unit'):
+        counts = cylinder_pivot_table[component]
+        usual = counts.mode().max()
+        for unit, count in zip(cylinder_pivot_table['Cylinder Unit'], counts):
+            if count != usual:
+                gaps.append({'Cylinder Unit': unit, 'Component': component,
+                             'Jobs on this Unit': int(count), 'Jobs on Most Units': int(usual)})
+    return pd.DataFrame(gaps, columns=columns)
 
 def process_engine_data(data, ref_sheet_path=None, engine_type=None):
     """Process both main and auxiliary engine data."""
@@ -320,42 +350,42 @@ def process_engine_data(data, ref_sheet_path=None, engine_type=None):
                 structured_data = process_job_code_dynamic(data, job_codes, job_description)
             main_engine_data.append(structured_data)
 
-        # Combine processed data
-        main_engine_data = pd.concat(main_engine_data, ignore_index=True)
+        # Combine processed data; "-" where a job has no such unit (e.g. Unit 9 exists only for main bearings)
+        main_engine_data = pd.concat(main_engine_data, ignore_index=True).fillna("-")
 
         # Extract Cylinder Unit information
         main_engine_filtered = data[data['Machinery Location'].str.contains("Main Engine", na=False)].copy()
-        main_engine_filtered.loc[:, 'Cylinder Unit'] = main_engine_filtered['Sub Component Location'].str.extract(r'(Cylinder Unit#\d+)')
-        main_engine_filtered.loc[:, 'Sub Components'] = main_engine_filtered['Sub Component Location'].str.extract(r'Cylinder Unit#\d+ > (.*)')
+        main_engine_filtered.loc[:, 'Cylinder Unit'] = main_engine_filtered['Sub Component Location'].str.extract(r'(Cylinder Unit#\d+)', expand=False)
+        main_engine_filtered.loc[:, 'Sub Components'] = main_engine_filtered['Sub Component Location'].str.extract(r'Cylinder Unit#\d+ > (.*)', expand=False)
 
-        # Create cylinder unit pivot table
-        cylinder_pivot_table = main_engine_filtered.pivot_table(
-            index='Cylinder Unit',
-            columns='Sub Components',
-            values='Job Code',
-            aggfunc='count',
-            fill_value=0
-        ).reset_index()
-        cylinder_pivot_table.columns.name = None
+        # Create cylinder unit pivot table (None when the vessel has no "Cylinder Unit#" locations)
+        cylinder_pivot_table = None
+        cylinder_rows = main_engine_filtered.dropna(subset=['Cylinder Unit', 'Sub Components'])
+        if not cylinder_rows.empty:
+            cylinder_pivot_table = cylinder_rows.pivot_table(
+                index='Cylinder Unit',
+                columns='Sub Components',
+                values='Job Code',
+                aggfunc='count',
+                fill_value=0
+            ).reset_index()
+            cylinder_pivot_table.columns.name = None
+            # Sort Cylinder Unit#10 after #9, not after #1
+            cylinder_pivot_table = cylinder_pivot_table.sort_values(
+                'Cylinder Unit', key=lambda s: s.str.extract(r'#(\d+)', expand=False).astype(int)
+            ).reset_index(drop=True)
 
-        # Get running hours for Main Engine
+        # Get running hours for Main Engine: the most common value, since a few rows can carry other counters
         main_engine_rows = data[data['Machinery Location'].str.contains('Main Engine', case=False, na=False)]
         main_engine_running_hours = "Not Available"
         if 'Machinery Running Hours' in data.columns:
-            running_hours = main_engine_rows['Machinery Running Hours'].dropna()
+            running_hours = pd.to_numeric(main_engine_rows['Machinery Running Hours'], errors='coerce').dropna()
             if not running_hours.empty:
-                main_engine_running_hours = str(int(float(running_hours.iloc[0])))
+                main_engine_running_hours = str(int(running_hours.mode().max()))
 
         # Get auxiliary engine data
         aux_engine_data = data[data['Machinery Location'].str.contains("Auxiliary Engine", na=False, case=False)].copy()
-        aux_running_hours = {'AE1': "Not Available", 'AE2': "Not Available", 'AE3': "Not Available"}
-        if 'Machinery Running Hours' in data.columns:
-            for ae_num in range(1, 4):
-                ae_data = data[data['Machinery Location'].str.contains(f'Auxiliary Engine#{ae_num}', case=False, na=False)]
-                if not ae_data.empty:
-                    running_hours = ae_data['Machinery Running Hours'].dropna()
-                    if not running_hours.empty:
-                        aux_running_hours[f'AE{ae_num}'] = str(int(float(running_hours.iloc[0])))
+        aux_running_hours = AuxiliaryEngineProcessor().extract_running_hours(data)
 
         # Create standard pivot table
         pivot_table = main_engine_data.pivot_table(
@@ -382,24 +412,9 @@ def process_engine_data(data, ref_sheet_path=None, engine_type=None):
 
                 ref_df = pd.read_excel(ref_sheet_path, sheet_name=sheet_name)
                 ref_df['UI Job Code'] = ref_df['UI Job Code'].astype(str)
-                # Deduplicate reference sheet on UI Job Code to prevent double-counting in merge
-                ref_df = ref_df.drop_duplicates(subset=['UI Job Code'])
 
                 filtered_dfMEjobs = data[data['Machinery Location'].str.contains('Main Engine', na=False)].copy()
                 filtered_dfMEjobs['Job Codecopy'] = filtered_dfMEjobs['Job Code'].astype(str)
-
-                # Dynamically map equivalent job codes based on ref_df
-                ref_codes = set(ref_df['UI Job Code'].unique())
-                code_mapping = {}
-                for group in EQUIVALENT_CODE_GROUPS:
-                    ref_codes_in_group = group & ref_codes
-                    if ref_codes_in_group:
-                        target_code = list(ref_codes_in_group)[0]
-                        for code in group:
-                            if code not in ref_codes:
-                                code_mapping[code] = target_code
-                
-                filtered_dfMEjobs['Job Codecopy'] = filtered_dfMEjobs['Job Codecopy'].replace(code_mapping)
 
                 result_dfME = filtered_dfMEjobs.merge(ref_df, left_on='Job Codecopy', right_on='UI Job Code', suffixes=('_filtered', '_ref'))
 
@@ -502,9 +517,7 @@ def generate_html_report(vessel_name, main_engine_data, aux_engine_data, main_en
                 <h3>Main Engine Running Hours: {main_engine_running_hours}</h3>
                 <h3>Auxiliary Engine Running Hours:</h3>
                 <ul>
-                    <li>Auxiliary Engine#1: {aux_running_hours['AE1']}</li>
-                    <li>Auxiliary Engine#2: {aux_running_hours['AE2']}</li>
-                    <li>Auxiliary Engine#3: {aux_running_hours['AE3']}</li>
+                    {''.join(f"<li>Auxiliary Engine#{name[2:]}: {hours}</li>" for name, hours in aux_running_hours.items())}
                 </ul>
             </div>
             <h2>Main Engine Maintenance Data</h2>
