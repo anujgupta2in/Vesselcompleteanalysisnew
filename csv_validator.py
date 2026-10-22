@@ -63,7 +63,8 @@ class CSVValidator:
                 rows = non_numeric.index.tolist()
                 total_rows = len(non_numeric)
                 if total_rows > 0:
-                    errors.append(f"Non-numeric values found in {col} at rows: {rows}")
+                    more = f" and {total_rows - 10} more" if total_rows > 10 else ""
+                    errors.append(f"Non-numeric values found in {col} at rows: {rows[:10]}{more}")
         return len(errors) == 0, "\n".join(errors)
 
     def validate_machinery_location(self, df):
@@ -73,40 +74,29 @@ class CSVValidator:
         # Filter only engine-related entries
         engine_entries = df[df['Machinery Location'].str.contains('Main Engine|Auxiliary Engine', case=False, na=False)]
         valid_patterns = [
+            # "Main Engine#1", "Main Engine - ME-C II GI#1", "Main Engine - RT - A#1", "Main Engine No1", ...
+            r'^Main Engine(?:[\s-]+[\w\s\-\./]*?)?[\s-]*(?:#|No)\s*\d+$',
             r'^Main Engine[\s-]*#?\d+$',
-            r'^Main Engine[\s-]*MC[\s-]*#?\d+$',
-            r'^Main Engine[\s-]*ME[\s-]*C[\s-]*II[\s-]*#?\d+$',
-            r'^Main Engine[\s-]*ME[\s-]*C[\s-]*GI[\s-]*#?\d+$',
-            r'^Main Engine[\s-]*ME[\s-]*C[\s-]*#?\d+$',
-            r'^Main Engine[\s-]*ME[\s-]*B[\s-]*#?\d+$',
-            r'^Main Engine[\s-]*RT[\s-]*FLEX[\s-]*#?\d+$',
-            r'^Main Engine[\s-]*RTFLEX[\s-]*#?\d+$',
-            r'^Main Engine[\s-]*RTA[\s-]*#?\d+$',
-            r'^Main Engine[\s-]*UEC[\s-]*#?\d+$',
-            r'^Main Engine[\s-]*W[\s-]*#?\d+$',
-            r'^Main Engine[\s-]*WX[\s-]*#?\d+$',
-            r'^Main Engine[\s-]*No\d+$',
-            
             r'^Auxiliary Engine[\s-]*#?\d+$',
             r'^Auxiliary Engine[\s-]*No\d+$',
         ]
 
-
-      
         import re
         pattern = '|'.join(valid_patterns)
-        
+
         # Check for standard patterns first
         mask = engine_entries['Machinery Location'].apply(lambda x: bool(re.match(pattern, str(x))) if pd.notna(x) else False)
-        
+
         # For entries not matching standard patterns, attempt auto-correction
         invalid_entries = engine_entries[~mask].copy()
         if not invalid_entries.empty:
             # Add a new column with corrected format (for potential fixes)
             df['_machinery_location_fixed'] = df['Machinery Location']
-            # Fix patterns like "Auxiliary EngineNo4" to "Auxiliary Engine#4"
-            df.loc[df['Machinery Location'].str.contains('No\\d+', regex=True, na=False), '_machinery_location_fixed'] = \
-                df.loc[df['Machinery Location'].str.contains('No\\d+', regex=True, na=False), 'Machinery Location'].str.replace('No', '#', regex=False)
+            # Fix only engine names ending in "No<number>", e.g. "Auxiliary EngineNo4" -> "Auxiliary Engine#4";
+            # other machinery and any other "No" in a name (e.g. "Nozzle") stay as they are
+            is_engine = df['Machinery Location'].str.contains('Main Engine|Auxiliary Engine', case=False, na=False)
+            df.loc[is_engine, '_machinery_location_fixed'] = \
+                df.loc[is_engine, 'Machinery Location'].str.replace(r'\s*No\s*(\d+)$', r'#\1', regex=True)
         
         # Original mask for validation feedback
         invalid_locations = engine_entries[~mask]

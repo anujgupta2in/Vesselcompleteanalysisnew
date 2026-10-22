@@ -16,20 +16,15 @@ class CompressorSystemProcessor:
             return ''
 
     def format_blank(self, val):
-        return "" if val == -1 else val
+        return "" if val == -1 else str(val)
 
     def process_compressor_data(self, df, dfCompressor):
         try:
-            # Ensure Job Codecopy exists
-            if 'Job Codecopy' not in df.columns:
-                df['Job Codecopy'] = df['Job Code'].astype(str).str.strip()
-
             # Filter rows where 'Machinery Location' contains 'Compressor'
             self.filtered_dfCompressorjobs = df[df['Machinery Location'].str.contains('Compressor', na=False)].copy()
 
-            # Ensure 'Job Codecopy' is of object type and safely converted to string
-            self.filtered_dfCompressorjobs['Job Codecopy'] = self.filtered_dfCompressorjobs['Job Codecopy'].astype(object)
-            self.filtered_dfCompressorjobs['Job Codecopy'] = self.filtered_dfCompressorjobs['Job Codecopy'].apply(self.safe_convert_to_string)
+            # Job code as text on the filtered copy only, so the shared vessel data is left unchanged
+            self.filtered_dfCompressorjobs['Job Codecopy'] = self.filtered_dfCompressorjobs['Job Code'].apply(self.safe_convert_to_string)
 
             dfCompressor = dfCompressor.copy()
             dfCompressor['UI Job Code'] = dfCompressor['UI Job Code'].astype(str)

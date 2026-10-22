@@ -1,14 +1,85 @@
 import pandas as pd
 import numpy as np
 
+def is_pump_machinery(machinery_location):
+    """True for pumps, but not "Pump Room", "Pump Room Davit" or "Cargo Pumping - Pipes, Valves and Fittings".
+
+    Two plain checks rather than one look-ahead regex: pandas 3 runs .str regexes through
+    PyArrow (RE2), which does not support look-ahead.
+    """
+    # Remove "Pump Room"/"Pumping", then look for "pump": "Pump Room Bilge Pump" is still a pump
+    remaining = machinery_location.astype(str).str.replace(r'pump\s*room|pumping', '', case=False, regex=True)
+    return remaining.str.contains('pump', case=False, na=False)
+
+# Jobs every motor-driven pump is expected to have (after mapping vessel variants onto these codes)
+STANDARD_PUMP_JOBS = {
+    '425': 'Pump - Minor Maintenance',
+    '426': 'Pump - Major Maintenance',
+    '602': 'Motor & Starter - Minor Maintenance',
+    '603': 'Motor - Major Maintenance',
+}
+
+
 class PumpSystemProcessor:
     def __init__(self):
         self.filtered_dfpump = pd.DataFrame()
         self.pivot_table_pump = pd.DataFrame()
         self.pivot_table_resultpumpJobs = pd.DataFrame()
+        self.pump_job_gaps = pd.DataFrame()
+        self.sub_pump_job_gaps = pd.DataFrame()
         self.styled_pivot_table_pump = None
         self.styled_pivot_table_resultpumpJobs = None
         self.mappings = {'4406': '425', '428': '425', '2329': '425', '4656': '426', '7039': '426', '6001': '602'}
+
+    def _mapped_codes(self, job_codes):
+        codes = job_codes.astype(str).str.strip()
+        return codes.map(self.mappings).fillna(codes)
+
+    def _gap_table(self, units, required, unit_label):
+        """One row per pump missing any required job: which ones, by code and title."""
+        rows = []
+        for unit, codes in units.items():
+            missing = [c for c in required if c not in codes]
+            if missing:
+                rows.append({
+                    unit_label: unit,
+                    'Missing Jobs': ', '.join(f"{STANDARD_PUMP_JOBS[c]} ({c})" for c in missing),
+                    'Missing Count': len(missing),
+                    # e.g. cargo pumps with their own job set have none of the standard jobs
+                    'Note': 'No standard pump jobs at all - check if this pump uses its own job set'
+                            if len(missing) == len(required) else '',
+                })
+        columns = [unit_label, 'Missing Jobs', 'Missing Count', 'Note']
+        return pd.DataFrame(rows, columns=columns)
+
+    def find_standard_job_gaps(self, df, dfpump=None):
+        """Pumps missing any of the standard pump/motor jobs.
+
+        Returns (pumps that are machinery, pumps inside other machinery). The required set is the
+        standard jobs that are also in the reference sheet, when the sheet lists any of them.
+        """
+        required = list(STANDARD_PUMP_JOBS)
+        if dfpump is not None and 'UI Job Code' in dfpump.columns:
+            in_reference = [c for c in required if c in set(dfpump['UI Job Code'].astype(str).str.strip())]
+            required = in_reference or required
+
+        data = df.assign(_code=self._mapped_codes(df['Job Code']))
+        is_pump = is_pump_machinery(data['Machinery Location'])
+
+        machinery_pumps = data[is_pump].groupby('Machinery Location')['_code'].agg(set)
+
+        # Pumps that are a sub-component, e.g. "Feed Pump - AE LO Purifier#1 > Motor - Feed Pump#1"
+        others = data[~is_pump].copy()
+        others['_part'] = others['Sub Component Location'].astype(str).str.split('>').str[0].str.strip()
+        others = others[others['_part'].str.contains(r'\bpump\b', case=False, regex=True)]
+        others['_unit'] = others['Machinery Location'] + ' > ' + others['_part']
+        sub_pumps = others.groupby('_unit')['_code'].agg(set)
+        # Only pumps that follow the standard set; engine-driven pumps (fuel injection, attached LO/CW pumps)
+        # have their own engine jobs and no motor
+        sub_pumps = sub_pumps[sub_pumps.map(lambda codes: bool(codes & {'425', '426'}))]
+
+        return (self._gap_table(machinery_pumps, required, 'Pump'),
+                self._gap_table(sub_pumps, required, 'Pump (inside other machinery)'))
 
     def safe_convert_to_string(self, value):
         try:
@@ -23,12 +94,8 @@ class PumpSystemProcessor:
             if 'UI Job Code' not in dfpump.columns:
                 raise ValueError("Reference sheet missing 'UI Job Code' column")
 
-            # Ensure Job Codecopy exists
-            if 'Job Codecopy' not in df.columns:
-                df['Job Codecopy'] = df['Job Code'].astype(str).str.strip()
-
             # 🔹 Pump Location Count Table
-            pump_df = df[df['Machinery Location'].str.contains('pump', case=False, na=False)]
+            pump_df = df[is_pump_machinery(df['Machinery Location'])]
             self.pivot_table_pump = pump_df.pivot_table(index='Machinery Location', values='Title', aggfunc='count')
 
             # ✅ Red highlight for counts > 6
@@ -42,8 +109,11 @@ class PumpSystemProcessor:
 
             print("✅ Pump count table created")
 
+            # 🔹 Pumps missing standard jobs (independent of the reference matching below)
+            self.pump_job_gaps, self.sub_pump_job_gaps = self.find_standard_job_gaps(df, dfpump)
+
             # 🔹 Filter and map job codes
-            self.filtered_dfpump = df[df['Machinery Location'].str.contains('Pump', case=False, na=False)].copy()
+            self.filtered_dfpump = pump_df.copy()
 
             self.filtered_dfpump['Job Codecopy'] = self.filtered_dfpump['Job Code'].astype(str).str.strip()
             self.filtered_dfpump['Job Codecopy'] = self.filtered_dfpump['Job Codecopy'].apply(self.safe_convert_to_string)

@@ -17,7 +17,7 @@ class CargoVentingSystemProcessor:
             return ''
 
     def format_blank(self, val):
-        return "" if val == -1 else val
+        return "" if val == -1 else str(val)
 
     def color_format(self, val):
         return "background-color: #ffd" if val != "" else ""
@@ -35,7 +35,9 @@ class CargoVentingSystemProcessor:
 
             # Step 2: Load reference
             ref_sheet_names = pd.ExcelFile(ref_sheet).sheet_names
-            self.cargovent_sheet = 'Cargovent' if 'Cargovent' in ref_sheet_names else ref_sheet_names[0]
+            if 'Cargovent' not in ref_sheet_names:
+                raise ValueError("No 'Cargovent' sheet found in the reference workbook")
+            self.cargovent_sheet = 'Cargovent'
             self.df_cargovent = pd.read_excel(ref_sheet, sheet_name=self.cargovent_sheet)
 
             # Step 3: Identify job code column

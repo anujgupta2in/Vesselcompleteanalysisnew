@@ -17,7 +17,7 @@ class InertGasSystemProcessor:
             return ''
 
     def format_blank(self, val):
-        return "" if val == -1 else val
+        return "" if val == -1 else str(val)
 
     def color_format(self, val):
         return "background-color: #ffd" if val != "" else ""
@@ -36,7 +36,9 @@ class InertGasSystemProcessor:
             self.filter_igsystem_jobs['Job Codecopy'] = self.filter_igsystem_jobs['Job Code'].apply(self.safe_convert_to_string)
 
             ref_sheet_names = pd.ExcelFile(ref_sheet).sheet_names
-            self.igsystem_sheet = 'IGSystem' if 'IGSystem' in ref_sheet_names else ref_sheet_names[0]
+            if 'IGSystem' not in ref_sheet_names:
+                raise ValueError("No 'IGSystem' sheet found in the reference workbook")
+            self.igsystem_sheet = 'IGSystem'
             self.df_igsystem = pd.read_excel(ref_sheet, sheet_name=self.igsystem_sheet)
 
             possible_code_cols = ['UI Job Code', 'Job Code', 'JobCode', 'Code']

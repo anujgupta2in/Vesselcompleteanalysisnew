@@ -24,7 +24,9 @@ class LSAFFAProcessor:
             self.filter_lsaffa_jobs['Job Codecopy'] = self.filter_lsaffa_jobs['Job Code'].apply(self.safe_convert_to_string)
 
             ref_sheet_names = pd.ExcelFile(ref_sheet).sheet_names
-            self.lsaffa_sheet = 'LSAFFA' if 'LSAFFA' in ref_sheet_names else ref_sheet_names[0]
+            if 'LSAFFA' not in ref_sheet_names:
+                raise ValueError("No 'LSAFFA' sheet found in the reference workbook")
+            self.lsaffa_sheet = 'LSAFFA'
             self.df_lsaffa = pd.read_excel(ref_sheet, sheet_name=self.lsaffa_sheet)
 
             job_code_col = 'UI Job Code'

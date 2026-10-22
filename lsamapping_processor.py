@@ -16,7 +16,7 @@ class LSAMappingProcessor:
             return ''
 
     def format_blank(self, val):
-        return "" if val in [0, '0', 0.0] else val
+        return "" if val in [0, '0', 0.0] else str(val)
 
     def highlight_one(self, val):
         if val == 1:
@@ -49,8 +49,7 @@ class LSAMappingProcessor:
 
             self.pivot_table_resultlsaJobs = pivot_raw.replace(0, '').map(self.format_blank)
 
-            # Optional: keep styled version for UI display.
-            # Use style.map instead of applymap for compatibility with newer pandas versions.
+            # Optional: keep styled version for UI display
             self.pivot_table_resultlsaJobs_styled = pivot_raw.style.map(self.highlight_one)
 
             total_raw = self.result_dflsa.pivot_table(

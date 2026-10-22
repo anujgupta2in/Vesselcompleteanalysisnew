@@ -16,7 +16,7 @@ class BoilerSystemProcessor:
             return ''
 
     def format_blank(self, val):
-        return "" if val == -1 else val
+        return "" if val == -1 else str(val)
 
     def process_boiler_data(self, df, dfboiler):
         try:

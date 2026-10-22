@@ -12,6 +12,70 @@ class ExportHandler:
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d")
         self.vessel_name = data['Vessel'].iloc[0] if 'Vessel' in data.columns and not data.empty else "Vessel"
 
+    def _write_sheet(self, writer, sheet_name, df, index=False):
+        """Write one table to its own sheet with a bold header, wrapped text and readable column widths."""
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            df = pd.DataFrame({'Info': ['No data available']})
+        if index:
+            df = df.reset_index()
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        book, sheet = writer.book, writer.sheets[sheet_name]
+        header = book.add_format({'bold': True, 'bg_color': '#D9E1F2', 'border': 1, 'text_wrap': True, 'valign': 'top'})
+        wrap = book.add_format({'text_wrap': True, 'valign': 'top'})
+        for col_num, column in enumerate(df.columns):
+            sheet.write(0, col_num, str(column), header)
+            longest = max([len(line) for v in df[column].astype(str) for line in v.split('\n')] + [len(str(column))])
+            sheet.set_column(col_num, col_num, min(max(longest + 2, 10), 60), wrap)
+        sheet.freeze_panes(1, 0)
+
+    def _summary_sheet(self, writer, rows):
+        self._write_sheet(writer, 'Summary', pd.DataFrame(
+            [('Vessel', self.vessel_name), ('Report date', self.timestamp), ('Engine type', self.engine_type)] + rows,
+            columns=['Item', 'Value']))
+
+    def generate_main_engine_report(self, main_engine_data, pivot_table, cylinder_pivot_table,
+                                    component_status, missing_count, main_engine_running_hours):
+        """Main Engine report as an Excel workbook (bytes)."""
+        from engine_processor import find_cylinder_gaps
+
+        cylinder_gaps = find_cylinder_gaps(cylinder_pivot_table)
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            self._summary_sheet(writer, [
+                ('Main Engine running hours', main_engine_running_hours),
+                ('Missing components', missing_count),
+                ('Cylinder unit gaps', len(cylinder_gaps)),
+            ])
+            self._write_sheet(writer, 'Maintenance', main_engine_data)
+            self._write_sheet(writer, 'Cylinder Units', cylinder_pivot_table)
+            self._write_sheet(writer, 'Cylinder Gaps', cylinder_gaps)
+            self._write_sheet(writer, 'Component Status', component_status)
+            self._write_sheet(writer, 'Job Frequencies', pivot_table)
+        return buffer.getvalue()
+
+    def generate_auxiliary_engine_report(self, aux_engine_data, aux_running_hours):
+        """Auxiliary Engine report as an Excel workbook (bytes)."""
+        from auxiliary_engine_processor import AuxiliaryEngineProcessor
+
+        processor = AuxiliaryEngineProcessor()
+        job_gaps = processor.find_job_gaps(self.data)
+        component_status, missing_components = processor.analyze_components(self.data)
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            self._summary_sheet(writer, [
+                (f'{name} running hours', hours) for name, hours in aux_running_hours.items()
+            ] + [
+                ('Missing components', missing_components),
+                ('Jobs missing or duplicated between engines', len(job_gaps)),
+            ])
+            self._write_sheet(writer, 'Maintenance', aux_engine_data)
+            self._write_sheet(writer, 'Job Gaps', job_gaps)
+            self._write_sheet(writer, 'Component Distribution', processor.create_component_distribution(self.data))
+            self._write_sheet(writer, 'Component Status', component_status)
+            self._write_sheet(writer, 'Task Count', processor.create_task_count_table(self.data))
+        return buffer.getvalue()
+
     def plot_to_base64(self, fig):
         buf = BytesIO()
         fig.savefig(buf, format="png", bbox_inches='tight')
@@ -100,9 +164,6 @@ class ExportHandler:
                 <div class="metric-card"><div class="metric-title">📊 Job Status Records</div><div class="metric-value">{total_status_records}</div></div>
                 <div class="metric-card"><div class="metric-title">🆕 New</div><div class="metric-value">{job_status_dict.get('New', 0)}</div></div>
                 <div class="metric-card"><div class="metric-title">🕓 Pending</div><div class="metric-value">{job_status_dict.get('Pending', 0)}</div></div>
-                # <div class="metric-card"><div class="metric-title">✅ Done</div><div class="metric-value">{job_status_dict.get('Done', 0)}</div></div>
-                # <div class="metric-card"><div class="metric-title">🔎 Verified</div><div class="metric-value">{job_status_dict.get('Verified', 0)}</div></div>
-                # <div class="metric-card"><div class="metric-title">❔ Other</div><div class="metric-value">{job_status_dict.get('Other', 0)}</div></div>
             </div>
             """
         html += """
@@ -177,7 +238,8 @@ class ExportHandler:
                             "Reference Analysis for Main Engine",
                             "Missing Jobs for Main Engine",
                             "Component Status Analysis for Main Engine",
-                            "Number of Missing Components for Main Engine"
+                            "Number of Missing Components for Main Engine",
+                            "Cylinder Unit Gaps for Main Engine"
                         ]
                         title = titles[i] if i < len(titles) else f"Main Engine Table {i+1}"
                     elif "Auxiliary Engine" in tab:
@@ -274,7 +336,9 @@ class ExportHandler:
                         titles = [
                             "Task Count Analysis for Pump System Analysis",
                             "Summary Jobs for Pump System Analysis",
-                                                ]
+                            "Pumps Missing Standard Jobs",
+                            "Pumps Inside Other Machinery Missing Standard Jobs",
+                        ]
                         title = titles[i] if i < len(titles) else f"Pump System Analysis {i+1}"
 
 

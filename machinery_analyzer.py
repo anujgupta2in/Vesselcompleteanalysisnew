@@ -472,39 +472,52 @@ class MachineryAnalyzer:
 
         
 
+    # Position words PMS appends to machinery names, longest first so "Fwd-Port" wins over "Port"
+    POSITIONS = r'Fwd-Port|Fwd-Stbd|Aft-Port|Aft-Stbd|Starboard|Forward|Centre|Center|Middle|Port|Stbd|Fwd|Aft'
+    # Glued to the name in lower case only for unambiguous words ("Winchstarboard"), never "port"/"aft"
+    # which also end real words ("Liferaft", "Shaft")
+    LOWER_GLUED_POSITIONS = r'fwd-port|fwd-stbd|aft-port|aft-stbd|starboard|forward'
+
+    def _lookup_update_values(self, name):
+        key = re.sub(r'\s+', ' ', name).strip().lower()
+        if not hasattr(self, '_update_lookup'):
+            self._update_lookup = {re.sub(r'\s+', ' ', k).strip().lower(): v for k, v in self.update_values.items()}
+        return self._update_lookup.get(key)
+
     def clean_machinery_location(self, machinery_name):
+        """Machinery name without unit numbers and position, e.g. "LiferaftPort1" -> "Liferaft".
+
+        Pass the name in its original case: a position glued to the name is recognised by its
+        capital letter ("LifeboatAft"), which keeps "Liferaft" and "Shaft" intact.
+        """
         if not isinstance(machinery_name, str):
             return machinery_name
 
-        # Normalize extra spaces
-        machinery_name = re.sub(r'\s+', ' ', machinery_name.strip())
+        name = re.sub(r'\s+', ' ', machinery_name.strip())
+        mapped = self._lookup_update_values(name)
+        if mapped is not None:
+            return mapped
 
-        # Enhanced suffix trimming logic
-        suffix_patterns = [
-            # NEW: handles suffixes attached directly with no space
-            r'(Fwd|Aft|Port|Starboard|Fwd-Port|Aft-Port|Fwd-Stbd|Aft-Stbd)$',
+        # Unit number once only, so model numbers stay ("Inmarsat-F77#1" -> "Inmarsat-F77")
+        name = re.sub(r'\s*(?:#|No\.?)?\s*\d+$', '', name)                         # "#2", "No2", " 3"
+        previous = None
+        while name != previous:
+            previous = name
+            name = re.sub(r'(?:(?<=[a-z])No|\sNo\.?)$', '', name)                   # "PumpNo"
+            name = re.sub(r'\s+\d+\s*Person$', '', name, flags=re.IGNORECASE)       # " 20 Person"
+            name = re.sub(rf'[\s\-]+(?:{self.POSITIONS})$', '', name, flags=re.IGNORECASE)  # " Port", "-Aft"
+            name = re.sub(rf'(?<=[a-z0-9.)/])(?:{self.POSITIONS})$', '', name)      # "LifeboatAft"
+            name = re.sub(rf'(?<=[a-z])(?:{self.LOWER_GLUED_POSITIONS})$', '', name)  # "Winchstarboard"
+            name = name.strip(' -')
 
-            # Existing safe suffix logic
-            r'(?:Fwd|Aft|Port|Starboard|Fwd-Port|Aft-Port|Fwd-Stbd|Aft-Stbd)[\s\-]*$',
-            r'\s+\d+\s*Person$',            # e.g. " 20 Person"
-            r'(?:No\d*|No)$',               # e.g. "No", "No6"
-            r'#?\d+$',                      # trailing numbers, e.g. "#2", "3"
-            r'[\s\-]+(Port|Starboard)$'     # safe space/hyphen suffixed Port/Starboard
-        ]
-
-        # Apply suffix trimming rules
-        for pattern in suffix_patterns:
-            machinery_name = re.sub(pattern, '', machinery_name, flags=re.IGNORECASE).strip()
-
-        # Final minor cleanup
-        machinery_name = re.sub(r'(?:\s+#?\d+)?\s*$', '', machinery_name).strip()
-
-        # Check in update_values dict last
-        for key in self.update_values:
-            if machinery_name.lower() == key.strip().lower():
-                return self.update_values[key]
-
-        return machinery_name
+        mapped = self._lookup_update_values(name)
+        if mapped is not None:
+            return mapped
+        # "Main Engine - WX", "Main Engine - ME-C II GI", ... are all the main engine itself
+        # (but not "Main Engine - HCU" or "Main Engine - Safety and Control")
+        if re.fullmatch(r'Main Engine\s*-\s*(?:ME|MC|RT|UEC|WX?|X|WinGD|DF|GI)\b[\w\s\-\.]*', name, flags=re.IGNORECASE):
+            return 'Main Engine'
+        return name
 
 
     def is_critical(self, machinery_name):
@@ -513,31 +526,31 @@ class MachineryAnalyzer:
         cleaned_name = self.clean_machinery_location(machinery_name)
         return any(critical.lower() in cleaned_name.lower() for critical in self.critical_machinery)
 
+    def cleaned_set(self, names):
+        """Lower-case cleaned machinery names, for comparing vessel and reference lists."""
+        cleaned = pd.Series(names).dropna().astype(str).map(self.clean_machinery_location)
+        return {str(x).strip().lower() for x in cleaned if str(x).strip()}
+
     def process_data(self, data, ref_sheet):
         try:
-            reference_data = pd.read_excel(ref_sheet)
-            required_columns = ['Machinery Location']
+            # Same reference lists as the QuickView summary, so both report the same missing machinery
+            sheets = pd.read_excel(ref_sheet, sheet_name=None)
+            reference_data = sheets.get('Machinery Location', next(iter(sheets.values())))
+            critical_data = sheets.get('Critical Machinery', pd.DataFrame())
+            vessel_specific = sheets.get('Vessel Specific Machinery', pd.DataFrame())
 
-            if not all(col in data.columns for col in required_columns) or not all(col in reference_data.columns for col in required_columns):
+            if 'Machinery Location' not in data.columns or 'Machinery Location' not in reference_data.columns:
                 return data, {"error": "Required columns missing in data or reference sheet"}
 
-            # Normalize input
-            data['Machinery Locationcopy'] = data['Machinery Location'].str.lower().str.strip()
-            reference_data['Machinery Location'] = reference_data['Machinery Location'].str.lower().str.strip()
-
-            # Apply cleaning and critical flagging
-            data['Machinery Location Clean'] = data['Machinery Locationcopy'].apply(self.clean_machinery_location)
-            reference_data['Machinery Location Clean'] = reference_data['Machinery Location'].apply(self.clean_machinery_location)
-
-            # Use original strings for critical check
+            # Work on a copy so the shared vessel data keeps its original columns
+            data = data.copy()
+            data['Machinery Location Clean'] = data['Machinery Location'].map(self.clean_machinery_location)
             data['Critical'] = data['Machinery Location'].apply(self.is_critical)
-            reference_data['Critical'] = reference_data['Machinery Location'].apply(self.is_critical)
 
-            # Use CLEANED names for set operations
-            vml_set = {str(x).strip().lower() for x in data['Machinery Location Clean'].dropna() if x is not None}
-            ml_set = {str(x).strip().lower() for x in reference_data['Machinery Location Clean'].dropna()}
-            cm_set = {str(x).strip().lower() for x in reference_data[reference_data['Critical'] == True]['Machinery Location Clean'].dropna()}
-            vsm_set = set()  # Placeholder if dfVSM context is provided
+            vml_set = self.cleaned_set(data['Machinery Location'])
+            ml_set = self.cleaned_set(reference_data['Machinery Location'])
+            cm_set = self.cleaned_set(critical_data.get('Critical Machinery', pd.Series(dtype=str)))
+            vsm_set = self.cleaned_set(vessel_specific.get('Vessel Specific Machinery', pd.Series(dtype=str)))
 
             # Combine all known expected machinery
             union_set = ml_set.union(cm_set, vsm_set)
@@ -547,10 +560,10 @@ class MachineryAnalyzer:
             missingmachinery = union_set - vml_set
 
             # Format output
-            difMachineryVessel_df = pd.DataFrame({'Different Machinery on Vessel': list(difMachineryVessel)})
+            difMachineryVessel_df = pd.DataFrame({'Different Machinery on Vessel': sorted(difMachineryVessel)})
             difMachineryVessel_df['Different Machinery on Vessel'] = difMachineryVessel_df['Different Machinery on Vessel'].str.title()
 
-            missingmachinery_df = pd.DataFrame({'Missing Machinery on Vessel': list(missingmachinery)})
+            missingmachinery_df = pd.DataFrame({'Missing Machinery on Vessel': sorted(missingmachinery)})
             missingmachinery_df['Missing Machinery on Vessel'] = missingmachinery_df['Missing Machinery on Vessel'].str.title()
 
             result = {

@@ -15,7 +15,7 @@ class CriticalJobsProcessor:
             return ''
 
     def format_blank(self, val):
-        return "" if val in [0, '0', 0.0] else val
+        return "" if val in [0, '0', 0.0] else str(val)
 
     def process_critical_data(self, df, dfcritical):
         try:

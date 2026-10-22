@@ -1,6 +1,15 @@
+import sys
+
 import streamlit as st
 import pandas as pd
 import numpy as np
+
+# A Windows console using a legacy code page ("charmap") can't print the emoji in the log messages;
+# show "?" instead of raising an error that stops the analysis
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, 'reconfigure'):
+        _stream.reconfigure(errors='replace')
+
 from engine_processor import process_engine_data, find_cylinder_gaps
 from auxiliary_engine_processor import AuxiliaryEngineProcessor
 from purifier_processor import PurifierProcessor
@@ -255,6 +264,14 @@ if uploaded_file is not None:
                 # Remove the temporary column
                 data = data.drop(columns=['_machinery_location_fixed'])
 
+        # Several analyses group jobs by the PMS "Function" column, which some exports leave out
+        if 'Function' not in data.columns:
+            st.warning(
+                "This file has no 'Function' column, so Bridge, Tanks, Cargo Handling, Cargo Pumping, "
+                "Cargo Venting, Inert Gas, LSA/FFA, Misc and the Critical/Inactive/LSA/FFA mapping analyses "
+                "can't run. Include the 'Function' column in the JiBe export to see them."
+            )
+
         # Show validation results
         if not is_valid:
             st.warning("Data Validation Issues Detected:")
@@ -356,48 +373,9 @@ if uploaded_file is not None:
 
                     # ➤ Safely generate BWTS pivot and missing job results for HTML export
                     try:
-                        bwts_sheet = st.session_state.get("bwts_model")
-                        selected_sheet_name = bwts_models[bwts_sheet] if bwts_sheet in bwts_models else None
-
-                        ref_sheet_names = pd.ExcelFile(ref_sheet).sheet_names
-                        bwts_sheet_final = selected_sheet_name if selected_sheet_name in ref_sheet_names else next(
-                            (s for s in ref_sheet_names if 'Ballast' in s or 'Water' in s or 'BWTS' in s), ref_sheet_names[0]
-                        )
-                        dfbwts = pd.read_excel(ref_sheet, sheet_name=bwts_sheet_final)
-
-                        filtered_dfbwtsjobs = data[data['Machinery Location'].str.contains('BWTS|Ballast Water Treatment Plant|Ballast Treatment', case=False, na=False)].copy()
-                        filtered_dfbwtsjobs['Job Codecopy'] = filtered_dfbwtsjobs['Job Code'].astype(str)
-
-                        job_code_col = next(
-                            (col for col in ['UI Job Code', 'Job Code', 'JobCode', 'Code'] if col in dfbwts.columns), None
-                        )
-
-                        if job_code_col:
-                            dfbwts[job_code_col] = dfbwts[job_code_col].astype(str)
-                            result_dfbwts = filtered_dfbwtsjobs.merge(
-                                dfbwts,
-                                left_on='Job Codecopy',
-                                right_on=job_code_col,
-                                suffixes=('_filtered', '_ref')
-                            )
-                            title_col = next(
-                                (col for col in ['Title', 'J3 Job Title', 'Task Description', 'Job Title'] if col in result_dfbwts.columns),
-                                None
-                            )
-                            if title_col and 'Machinery Location' in result_dfbwts.columns:
-                                pivot_table_resultbwtsJobs = result_dfbwts.pivot_table(
-                                    index=title_col,
-                                    columns='Machinery Location',
-                                    values='Job Codecopy',
-                                    aggfunc='count'
-                                ).fillna(0).astype(int)
-
-                            # ✅ Set final export tables
-                            pivot_table_resultbwtsJobs = pivot_table_resultbwtsJobs
-                            missingjobsbwtsresult = dfbwts[
-                                ~dfbwts[job_code_col].isin(filtered_dfbwtsjobs['Job Codecopy'])
-                            ]
-
+                        selected_bwts_sheet = bwts_models.get(st.session_state.get("bwts_model"))
+                        pivot_table_resultbwtsJobs = bwts_processor.create_reference_pivot(data, ref_sheet, selected_bwts_sheet)
+                        missingjobsbwtsresult = bwts_processor.process_reference_data(data, ref_sheet, selected_bwts_sheet)
                     except Exception as bwts_error:
                         print(f"❌ BWTS Analysis export failed: {bwts_error}")
                         pivot_table_resultbwtsJobs = pd.DataFrame()
@@ -596,10 +574,16 @@ if uploaded_file is not None:
                         summary_table_pump = pump_processor.pivot_table_resultpumpJobs
                         summary_table_pump = summary_table_pump.fillna(0).astype(int) if summary_table_pump is not None and not summary_table_pump.empty else pd.DataFrame()
 
+                        # Tables 3-4: pumps missing standard jobs
+                        pump_job_gaps = pump_processor.pump_job_gaps
+                        sub_pump_job_gaps = pump_processor.sub_pump_job_gaps
+
                     except Exception as pumperror:
                         print(f"❌ Pump System Analysis export failed: {pumperror}")
                         task_count_pump = pd.DataFrame()
                         summary_table_pump = pd.DataFrame()
+                        pump_job_gaps = pd.DataFrame()
+                        sub_pump_job_gaps = pd.DataFrame()
 
 
                     # ➤ Safely generate Compressor System results for HTML export
@@ -1390,7 +1374,8 @@ if uploaded_file is not None:
                     boiler_processor.process_boiler_data(data, ref_sheets.get("Boiler", pd.DataFrame()))
                     bridge_processor.process_bridge_data(data, ref_sheets.get("Bridge", pd.DataFrame()))
                     bt_processor.process_bt_data(data, ref_sheets.get("Bow Thruster", pd.DataFrame()))
-                    bwts_missing_jobs = bwts_processor.process_reference_data(data, ref_sheet)
+                    bwts_missing_jobs = bwts_processor.process_reference_data(
+                        data, ref_sheet, bwts_models.get(st.session_state.get("bwts_model")))
 
                     chs_processor = CargoHandlingSystemProcessor()
                     dfCargoHandling = pd.read_excel(ref_sheet, sheet_name="Cargohanding")
@@ -1553,7 +1538,9 @@ if uploaded_file is not None:
 
                         "Pump System Analysis": [
                             task_count_pump,
-                            summary_table_pump
+                            summary_table_pump,
+                            pump_job_gaps,
+                            sub_pump_job_gaps
                         ],
 
                         "Compressor System Analysis": [
@@ -1737,30 +1724,36 @@ if uploaded_file is not None:
 
         with col2:
             if st.button("Export Main Engine Report"):
-                me_export = export_handler.generate_main_engine_report(
-                    main_engine_data, pivot_table, 
-                    cylinder_pivot_table, component_status, missing_count,
-                    main_engine_running_hours
-                )
-                st.success(f"Main Engine Report generated successfully!")
-                st.download_button(
-                    label="Download Main Engine Report",
-                    data=me_export,
-                    file_name=f"{vessel_name}_main_engine_report.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                try:
+                    me_export = export_handler.generate_main_engine_report(
+                        main_engine_data, pivot_table,
+                        cylinder_pivot_table, component_status, missing_count,
+                        main_engine_running_hours
+                    )
+                    st.success(f"Main Engine Report generated successfully!")
+                    st.download_button(
+                        label="Download Main Engine Report",
+                        data=me_export,
+                        file_name=f"{vessel_name}_main_engine_report.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                except Exception as e:
+                    st.error(f"Error generating Main Engine report: {e}")
         with col3:
             if st.button("Export Auxiliary Engine Report"):
-                ae_export = export_handler.generate_auxiliary_engine_report(
-                    aux_engine_data, aux_running_hours
-                )
-                st.success(f"Auxiliary Engine Report generated successfully!")
-                st.download_button(
-                    label="Download Auxiliary Engine Report",
-                    data=ae_export,
-                    file_name=f"{vessel_name}_auxiliary_engine_report.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                try:
+                    ae_export = export_handler.generate_auxiliary_engine_report(
+                        aux_engine_data, aux_running_hours
+                    )
+                    st.success(f"Auxiliary Engine Report generated successfully!")
+                    st.download_button(
+                        label="Download Auxiliary Engine Report",
+                        data=ae_export,
+                        file_name=f"{vessel_name}_auxiliary_engine_report.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                except Exception as e:
+                    st.error(f"Error generating Auxiliary Engine report: {e}")
 
         # Tabs for analysis
         def switch_tab(tab_index):
@@ -2286,114 +2279,26 @@ if uploaded_file is not None:
                     # Get missing jobs data using the selected model's sheet name
                     missing_jobs_bwts = bwts_processor.process_reference_data(data, ref_sheet, preferred_sheet=selected_sheet_name)
 
-                    # Generate result_dfbwts data
-                    # Create a copy of data to avoid modifications to original
-                    data_copy = data.copy()
+                    # Display Reference Jobs for BWTS
+                    st.subheader("Reference Jobs for BWTS")
+                    if bwts_processor.get_bwts_data(data).empty:
+                        st.warning("No BWTS jobs found on this vessel - every reference job is listed as missing below.")
+                    try:
+                        pivot_table_resultbwtsJobs = bwts_processor.create_reference_pivot(data, ref_sheet, selected_sheet_name)
+                        if not pivot_table_resultbwtsJobs.empty:
+                            st.dataframe(pivot_table_resultbwtsJobs.style.map(color_binary_cells), use_container_width=True)
 
-                    # Filter for BWTS jobs with more flexible patterns
-                    bwts_patterns = ['Ballast Water Treatment Plant', 'BWTS', 'Ballast Treatment']
-                    mask = data_copy['Machinery Location'].str.contains('|'.join(bwts_patterns), case=False, na=False)
-                    filtered_dfbwtsjobs = data_copy[mask].copy()
-
-                    # Read the reference sheet
-                    ref_sheet_names = pd.ExcelFile(ref_sheet).sheet_names
-
-                    # First try to use the selected model sheet
-                    bwts_sheet = selected_sheet_name if selected_sheet_name in ref_sheet_names else None
-
-                    # If the selected sheet doesn't exist, fall back to default behavior
-                    if bwts_sheet is None:
-                        # Look for 'BWTS' sheet
-                        bwts_sheet = 'BWTS' if 'BWTS' in ref_sheet_names else None
-
-                        # If not found, try to find any sheet with 'BWTS', 'Ballast' or 'Water' in the name
-                        if bwts_sheet is None:
-                            for sheet in ref_sheet_names:
-                                if 'BWTS' in sheet or 'Ballast' in sheet or 'Water' in sheet:
-                                    bwts_sheet = sheet
-                                    break
-
-                        # If still no BWTS-specific sheet, use the first sheet
-                        if bwts_sheet is None:
-                            bwts_sheet = ref_sheet_names[0]
-                            print(f"Selected sheet '{selected_sheet_name}' not found. No BWTS sheet found in app.py, using the first sheet: {bwts_sheet}")
-                        else:
-                            print(f"Selected sheet '{selected_sheet_name}' not found. Using reference sheet in app.py: {bwts_sheet}")
-                    else:
-                        print(f"Using selected model sheet in app.py: {bwts_sheet}")
-
-                    # Read the reference sheet
-                    dfbwts = pd.read_excel(ref_sheet, sheet_name=bwts_sheet)
-
-                    # Create Job Codecopy column
-                    if 'Job Code' in filtered_dfbwtsjobs.columns:
-                        filtered_dfbwtsjobs['Job Codecopy'] = filtered_dfbwtsjobs['Job Code'].astype(str)
-
-                        # Display Reference Jobs for BWTS
-                        st.subheader("Reference Jobs for BWTS")
-                        if not filtered_dfbwtsjobs.empty and not dfbwts.empty:
-                            try:
-                                # Display the columns in the reference data (for debugging)
-                                print(f"Columns in reference data: {dfbwts.columns.tolist()}")
-
-                                # Check which column to use for job code in reference data
-                                job_code_col = None
-                                for possible_col in ['UI Job Code', 'Job Code', 'JobCode', 'Code']:
-                                    if possible_col in dfbwts.columns:
-                                        job_code_col = possible_col
-                                        print(f"Found job code column: {job_code_col}")
-                                        break
-
-                                if job_code_col is not None:
-                                    # Convert job codes to string for proper matching
-                                    dfbwts[job_code_col] = dfbwts[job_code_col].astype(str)
-
-                                    # Print sample values for debugging
-                                    print(f"Sample Job Codecopy values: {filtered_dfbwtsjobs['Job Codecopy'].iloc[:5].tolist()}")
-                                    print(f"Sample {job_code_col} values: {dfbwts[job_code_col].iloc[:5].tolist()}")
-
-                                    # Merge filtered_dfbwtsjobs with dfbwts on the matching job codes
-                                    result_dfbwts = filtered_dfbwtsjobs.merge(dfbwts, left_on='Job Codecopy', right_on=job_code_col, suffixes=('_filtered', '_ref'))
-
-                                    # Reset index of the result DataFrame
-                                    result_dfbwts.reset_index(drop=True, inplace=True)
-
-                                    # Check for title column with different possible names
-                                    title_col = None
-                                    for possible_title in ['Title', 'J3 Job Title', 'Task Description', 'Job Title']:
-                                        if possible_title in result_dfbwts.columns:
-                                            title_col = possible_title
-                                            print(f"Found title column: {title_col}")
-                                            break
-
-                                    # Create pivot table if we have the necessary columns
-                                    if title_col is not None and 'Machinery Location' in result_dfbwts.columns:
-                                        pivot_table_resultbwtsJobs = result_dfbwts.pivot_table(
-                                            index=title_col, 
-                                            columns='Machinery Location', 
-                                            values='Job Codecopy', 
-                                            aggfunc='count'
-                                        )
-
-                                        # Display the pivot table
-                                        st.write(pivot_table_resultbwtsJobs.to_html(), unsafe_allow_html=True)
-
-                                        # Provide download option
-                                        csv_pivot = pivot_table_resultbwtsJobs.to_csv()
-                                        st.download_button(
-                                            label="Download Reference Jobs Pivot Table CSV",
-                                            data=csv_pivot,
-                                            file_name="bwts_ref_jobs_pivot.csv",
-                                            mime="text/csv"
-                                        )
-                                    else:
-                                        st.info("Required columns for pivot table not found in merged data.")
-                                else:
-                                    st.info("No job code column found in reference data.")
-                            except Exception as e:
-                                st.error(f"Error creating BWTS reference pivot table: {str(e)}")
+                            # Provide download option
+                            st.download_button(
+                                label="Download Reference Jobs Pivot Table CSV",
+                                data=pivot_table_resultbwtsJobs.to_csv(),
+                                file_name="bwts_ref_jobs_pivot.csv",
+                                mime="text/csv"
+                            )
                         else:
                             st.info("No reference job data available for BWTS.")
+                    except Exception as e:
+                        st.error(f"Error creating BWTS reference pivot table: {str(e)}")
 
                     # Display Missing Jobs for BWTS
                     st.subheader("Missing Jobs for BWTS")
@@ -2447,7 +2352,9 @@ if uploaded_file is not None:
 
             try:
                 # Reference Job Analysis
-                if ref_sheet is not None:
+                if hatch_processor.get_hatch_data(data).empty:
+                    st.info("No hatch cover jobs on this vessel, so hatch reference analysis is skipped.")
+                elif ref_sheet is not None:
                     # Create reference pivot table for Hatch Covers
                     pivot_table_hatch = hatch_processor.create_reference_pivot_table(data, ref_sheet)
 
@@ -2902,6 +2809,8 @@ if uploaded_file is not None:
                     try:
                         dfpump = pd.read_excel(ref_sheet, sheet_name='Pumps')
                         pump_output = pump_processor.process_pump_data(data, dfpump)
+                        if isinstance(pump_output, pd.DataFrame) and 'Error' in pump_output.columns:
+                            st.error(pump_output['Error'].iloc[0])
 
                         # 🔹 Display Pump Count by Location
                         st.subheader("Pump Location Task Count")
@@ -2918,6 +2827,23 @@ if uploaded_file is not None:
                             st.dataframe(pump_processor.pivot_table_resultpumpJobs)
                         else:
                             st.info("No mapped pump jobs found to display.")
+
+                        # 🔹 Pumps missing standard pump/motor jobs
+                        st.subheader("Pumps Missing Standard Jobs")
+                        st.caption("Standard set: Pump Minor (425), Pump Major (426), Motor & Starter Minor (602), Motor Major (603). "
+                                   "Vessel variants such as 4406, 428 and 4656 count as their standard job.")
+                        if not pump_processor.pump_job_gaps.empty:
+                            st.warning(f"{len(pump_processor.pump_job_gaps)} pump(s) are missing standard jobs.")
+                            st.dataframe(pump_processor.pump_job_gaps, use_container_width=True, hide_index=True)
+                        else:
+                            st.success("Every pump has the standard pump and motor jobs.")
+
+                        st.subheader("Pumps Inside Other Machinery Missing Standard Jobs")
+                        st.caption("Pumps recorded as a sub-component, e.g. a purifier feed pump or a hydraulic unit pump.")
+                        if not pump_processor.sub_pump_job_gaps.empty:
+                            st.dataframe(pump_processor.sub_pump_job_gaps, use_container_width=True, hide_index=True)
+                        else:
+                            st.success("No gaps found for pumps inside other machinery.")
 
                         # 🔹 Download Buttons
                         csv1 = pump_processor.filtered_dfpump.to_csv(index=False)
@@ -4667,7 +4593,8 @@ if uploaded_file is not None:
                     boiler_processor.process_boiler_data(data, ref_sheets.get("Boiler", pd.DataFrame()))
                     bridge_processor.process_bridge_data(data, ref_sheets.get("Bridge", pd.DataFrame()))
                     bt_processor.process_bt_data(data, ref_sheets.get("Bow Thruster", pd.DataFrame()))
-                    bwts_missing_jobs = bwts_processor.process_reference_data(data, ref_sheet)
+                    bwts_missing_jobs = bwts_processor.process_reference_data(
+                        data, ref_sheet, bwts_models.get(st.session_state.get("bwts_model")))
 
                     chs_processor = CargoHandlingSystemProcessor()
                     dfCargoHandling = pd.read_excel(ref_sheet, sheet_name="Cargohanding")

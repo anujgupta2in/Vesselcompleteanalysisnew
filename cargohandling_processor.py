@@ -17,7 +17,7 @@ class CargoHandlingSystemProcessor:
             return ''
 
     def format_blank(self, val):
-        return "" if val == -1 else val
+        return "" if val == -1 else str(val)
 
     def color_format(self, val):
         return "background-color: #ffd" if val != "" else ""
@@ -37,7 +37,9 @@ class CargoHandlingSystemProcessor:
 
             # Step 2: Load the reference sheet
             ref_sheet_names = pd.ExcelFile(ref_sheet).sheet_names
-            self.cargohanding_sheet = 'Cargohanding' if 'Cargohanding' in ref_sheet_names else ref_sheet_names[0]
+            if 'Cargohanding' not in ref_sheet_names:
+                raise ValueError("No 'Cargohanding' sheet found in the reference workbook")
+            self.cargohanding_sheet = 'Cargohanding'
             self.df_cargohanding = pd.read_excel(ref_sheet, sheet_name=self.cargohanding_sheet)
 
             # Step 3: Detect usable job code column

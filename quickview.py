@@ -45,23 +45,14 @@ class QuickViewAnalyzer:
         self.dfVSM = dfVSM.copy()
         self.analyzer = MachineryAnalyzer()
 
-        # Clean and normalize machinery locations
+        # Clean machinery names in their original case (the cleaner relies on it), compare in lower case
         self.df['Machinery Locationcopy'] = self.df['Machinery Location'].str.lower().str.strip()
-        self.df['Machinery Location Clean'] = self.df['Machinery Locationcopy'].apply(self.analyzer.clean_machinery_location)
+        self.df['Machinery Location Clean'] = self.df['Machinery Location'].map(self.analyzer.clean_machinery_location)
 
-        self.dfML['Machinery Location'] = self.dfML['Machinery Location'].str.lower().str.strip()
-        self.dfML['Machinery Location Clean'] = self.dfML['Machinery Location'].apply(self.analyzer.clean_machinery_location)
-
-        self.dfCM['Critical Machinery'] = self.dfCM['Critical Machinery'].str.lower().str.strip()
-        self.dfCM['Machinery Location Clean'] = self.dfCM['Critical Machinery'].apply(self.analyzer.clean_machinery_location)
-
-        self.dfVSM['Vessel Specific Machinery'] = self.dfVSM['Vessel Specific Machinery'].str.lower().str.strip()
-        self.dfVSM['Machinery Location Clean'] = self.dfVSM['Vessel Specific Machinery'].apply(self.analyzer.clean_machinery_location)
-
-        self.vml_set = set(self.df['Machinery Location Clean'].dropna().str.lower())
-        self.ml_set = set(self.dfML['Machinery Location Clean'].dropna().str.lower())
-        self.cm_set = set(self.dfCM['Machinery Location Clean'].dropna().str.lower())
-        self.vsm_set = set(self.dfVSM['Machinery Location Clean'].dropna().str.lower())
+        self.vml_set = self.analyzer.cleaned_set(self.df['Machinery Location'])
+        self.ml_set = self.analyzer.cleaned_set(self.dfML.get('Machinery Location', pd.Series(dtype=str)))
+        self.cm_set = self.analyzer.cleaned_set(self.dfCM.get('Critical Machinery', pd.Series(dtype=str)))
+        self.vsm_set = self.analyzer.cleaned_set(self.dfVSM.get('Vessel Specific Machinery', pd.Series(dtype=str)))
 
     def calculate_missing_and_diff(self):
         union_set = self.ml_set.union(self.cm_set, self.vsm_set)
@@ -85,13 +76,30 @@ class QuickViewAnalyzer:
         result.columns = ['Job Source', 'Title Count']
         return result.style.apply(highlight_unknown, subset=['Job Source']).hide(axis='index')
 
+    def count_critical_jobs(self):
+        """Jobs flagged "C" in the PMS export's unnamed critical column (its header is blank)."""
+        for col in self.df.columns:
+            if str(col).startswith('Unnamed'):
+                values = self.df[col].dropna().astype(str).str.strip()
+                if not values.empty and (values == 'C').all():
+                    return int(len(values))
+        return 0
+
+    @staticmethod
+    def is_placeholder(df):
+        """One-row "Error" / "No data found" results from a processor are not missing jobs."""
+        if len(df) != 1 or 'Job Code' not in df.columns:
+            return False
+        return str(df['Job Code'].iloc[0]) in ('Error', 'Reference Error', 'Column Error', 'No data found',
+                                               'No LSA/FFA jobs found', 'No Cargo Pumping jobs found')
+
     def get_basic_counts(self, **missing_data_sources):
         _, miss_df = self.calculate_missing_and_diff()
         self.missing_machinery_count = len(miss_df)
 
         vesselname = self.df['Vessel'].iloc[0] if 'Vessel' in self.df.columns else 'Unknown'
         totaljobs = self.df['Title'].count()
-        criticaljobscount = self.df['Unnamed: 0'].count() if 'Unnamed: 0' in self.df.columns else 0
+        criticaljobscount = self.count_critical_jobs()
 
         available_machinery = self.df["Machinery Locationcopy"].dropna().astype(str).str.lower().str.strip().unique()
         missing_table_summary = []
@@ -100,12 +108,13 @@ class QuickViewAnalyzer:
             if isinstance(df, pd.DataFrame):
                 count = 0
 
-                if "Machinery" in df.columns:
-                    df["Machinery_normalized"] = df["Machinery"].astype(str).str.lower().str.strip()
-                    filtered_df = df[df["Machinery_normalized"].apply(
-                        lambda x: any(str(x) in str(onboard) or str(onboard) in str(x) for onboard in available_machinery) if pd.notna(x) else False
-                    )]
-                    count = len(filtered_df)
+                if self.is_placeholder(df):
+                    count = 0
+                elif "Machinery" in df.columns:
+                    machinery = df["Machinery"].astype(str).str.lower().str.strip()
+                    count = int(machinery.apply(
+                        lambda x: any(x in onboard or onboard in x for onboard in available_machinery)
+                    ).sum())
                 else:
                     count = len(df)
 

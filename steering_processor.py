@@ -16,7 +16,7 @@ class SteeringSystemProcessor:
             return ''
 
     def format_blank(self, val):
-        return "" if val == -1 else val
+        return "" if val == -1 else str(val)
 
     def process_steering_data(self, df, dfSteering):
         try:

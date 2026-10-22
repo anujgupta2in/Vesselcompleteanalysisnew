@@ -17,7 +17,7 @@ class CargoPumpingProcessor:
             return ''
 
     def format_blank(self, val):
-        return "" if val == -1 else val
+        return "" if val == -1 else str(val)
 
     def color_format(self, val):
         return "background-color: #ffd" if val != "" else ""
@@ -52,7 +52,9 @@ class CargoPumpingProcessor:
 
             # Read reference sheet
             ref_sheet_names = pd.ExcelFile(ref_sheet).sheet_names
-            self.cargopumping_sheet = 'Cargo Pumping' if 'Cargo Pumping' in ref_sheet_names else ref_sheet_names[0]
+            if 'Cargo Pumping' not in ref_sheet_names:
+                raise ValueError("No 'Cargo Pumping' sheet found in the reference workbook")
+            self.cargopumping_sheet = 'Cargo Pumping'
             self.dfcargopumping = pd.read_excel(ref_sheet, sheet_name=self.cargopumping_sheet)
 
             if 'UI Job Code' not in self.dfcargopumping.columns:
@@ -72,7 +74,10 @@ class CargoPumpingProcessor:
             self.missingjobscargopumpingresult = self.dfcargopumping[~self.dfcargopumping['UI Job Code'].isin(
                 self.filtercargo_pumping_jobs['Job Codecopy'])].reset_index(drop=True)
 
-            return self.result_dfcargopumping[['UI Job Code', 'J3 Job Title', 'Remarks', 'Applicability']] if 'J3 Job Title' in self.result_dfcargopumping.columns else self.result_dfcargopumping
+            # Only the reference columns this sheet actually has (older sheets lack "Applicability")
+            summary_cols = [c for c in ['UI Job Code', 'J3 Job Title', 'Remarks', 'Applicability']
+                            if c in self.result_dfcargopumping.columns]
+            return self.result_dfcargopumping[summary_cols] if 'J3 Job Title' in summary_cols else self.result_dfcargopumping
 
         except Exception as e:
             print(f"Error processing Cargo Pumping data: {str(e)}")

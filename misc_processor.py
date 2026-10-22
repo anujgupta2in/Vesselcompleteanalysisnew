@@ -18,7 +18,7 @@ class MiscSystemProcessor:
             return ''
 
     def format_blank(self, val):
-        return "" if val == -1 else val
+        return "" if val == -1 else str(val)
 
     def process_misc_data(self, df, dfmisc):
         try:

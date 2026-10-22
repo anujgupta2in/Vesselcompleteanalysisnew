@@ -15,7 +15,7 @@ class InactiveMappingProcessor:
             return ''
 
     def format_blank(self, val):
-        return "" if val in [0, '0', 0.0] else val
+        return "" if val in [0, '0', 0.0] else str(val)
 
     def find_column(self, df, possible_names):
         for name in possible_names:

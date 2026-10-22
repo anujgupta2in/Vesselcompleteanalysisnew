@@ -24,7 +24,9 @@ class FFASystemProcessor:
             self.filter_ffasys_jobs['Job Codecopy'] = self.filter_ffasys_jobs['Job Code'].apply(self.safe_convert_to_string)
 
             ref_sheet_names = pd.ExcelFile(ref_sheet).sheet_names
-            self.ffasys_sheet = 'FFASYS' if 'FFASYS' in ref_sheet_names else ref_sheet_names[0]
+            if 'FFASYS' not in ref_sheet_names:
+                raise ValueError("No 'FFASYS' sheet found in the reference workbook")
+            self.ffasys_sheet = 'FFASYS'
             self.df_ffasys = pd.read_excel(ref_sheet, sheet_name=self.ffasys_sheet)
 
             job_code_col = 'UI Job Code'
