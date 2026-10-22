@@ -186,7 +186,8 @@ class ExportHandler:
                             "Component Distribution for Auxiliary Engine",
                             "Component Status Analysis for Auxiliary Engine",
                             "Reference Analysis for Auxiliary Engine",
-                            "Missing Jobs for Auxiliary Engine"
+                            "Missing Jobs for Auxiliary Engine",
+                            "Job Gaps Between Auxiliary Engines"
                         ]
                         title = titles[i] if i < len(titles) else f"Auxiliary Engine Table {i+1}"
                     elif "Machinery Location Analysis" in tab:
@@ -497,7 +498,7 @@ class ExportHandler:
                                     val = float(val)
                                     if val == 0:
                                         return "background-color: #dc3545"
-                                    elif 1 <= val <= 5:
+                                    elif val == 1:
                                         return "background-color: #28a745"
                                     elif val > 5:
                                         return "background-color: #fd7e14"

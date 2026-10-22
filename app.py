@@ -100,7 +100,7 @@ def color_binary_cells(val):
         val = int(val)
         if val == 0:
             return 'background-color: #f8d7da; color: #721c24'  # red
-        elif 1 <= val <= 5:
+        elif val == 1:
             return 'background-color: #d4edda; color: #155724'  # green
         elif val > 5:
             return 'background-color: #ffeeba; color: #856404'  # orange/yellow
@@ -287,19 +287,14 @@ if uploaded_file is not None:
 
         # Running Hours Summary
         st.subheader("Running Hours Summary")
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
+        metric_cols = st.columns(1 + len(aux_running_hours))
+        with metric_cols[0]:
             st.metric("Main Engine", value=main_engine_running_hours if main_engine_running_hours != "Not Available" else "N/A",
                       help="Main Engine Running Hours")
-        with m2:
-            st.metric("AE1", value=aux_running_hours['AE1'] if aux_running_hours['AE1'] != "Not Available" else "N/A",
-                      help="Auxiliary Engine 1 Running Hours")
-        with m3:
-            st.metric("AE2", value=aux_running_hours['AE2'] if aux_running_hours['AE2'] != "Not Available" else "N/A",
-                      help="Auxiliary Engine 2 Running Hours")
-        with m4:
-            st.metric("AE3", value=aux_running_hours['AE3'] if aux_running_hours['AE3'] != "Not Available" else "N/A",
-                      help="Auxiliary Engine 3 Running Hours")
+        for metric_col, (ae_name, ae_hours) in zip(metric_cols[1:], aux_running_hours.items()):
+            with metric_col:
+                st.metric(ae_name, value=ae_hours if ae_hours != "Not Available" else "N/A",
+                          help=f"Auxiliary Engine {ae_name[2:]} Running Hours")
 
 
         
@@ -1416,6 +1411,7 @@ if uploaded_file is not None:
                     aux_task_count = ae_processor.create_task_count_table(data)
                     aux_component_dist = ae_processor.create_component_distribution(data)
                     aux_component_status, aux_missing_component_count = ae_processor.analyze_components(data)
+                    aux_job_gaps = ae_processor.find_job_gaps(data)
                     ref_sheets = pd.read_excel(ref_sheet, sheet_name=None)
                     dfML = ref_sheets.get('Machinery Location', pd.DataFrame())
                     dfCM = ref_sheets.get('Critical Machinery', pd.DataFrame())
@@ -1522,7 +1518,8 @@ if uploaded_file is not None:
                             aux_component_dist,
                             aux_component_status,
                             ae_ref_pivot,
-                            ae_missing_jobs
+                            ae_missing_jobs,
+                            aux_job_gaps
                         ],
                         "Machinery Location Analysis": [
                             analysis_results.get('missing_machinery', pd.DataFrame()),
@@ -2020,6 +2017,24 @@ if uploaded_file is not None:
                 st.error(f"Error displaying Component Distribution: {str(e)}")
 
             try:
+                # Jobs missing or duplicated compared with sister engines
+                st.subheader("Job Gaps Between Auxiliary Engines")
+                ae_job_gaps = ae_processor.find_job_gaps(data)
+                if not ae_job_gaps.empty:
+                    st.warning(f"{len(ae_job_gaps)} job(s) missing or duplicated compared with sister engines.")
+                    st.dataframe(ae_job_gaps, use_container_width=True)
+                    st.download_button(
+                        label="Download Job Gaps CSV",
+                        data=ae_job_gaps.to_csv(index=False),
+                        file_name="auxiliary_engine_job_gaps.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.success("All auxiliary engines have the same jobs.")
+            except Exception as e:
+                st.error(f"Error displaying Job Gaps: {str(e)}")
+
+            try:
                 # Component Status Analysis
                 component_status, missing_count = ae_processor.analyze_components(data)
                 if component_status is not None and not component_status.empty:
@@ -2027,7 +2042,9 @@ if uploaded_file is not None:
                     def color_status(val):
                         color = '#28a745' if val == 'Present' else '#dc3545'
                         return f'color: {color}'
-                    styled_status = component_status.style.map(color_status, subset=['Status'])
+                    styled_status = component_status.style.map(
+                        color_status, subset=[c for c in component_status.columns if c != 'Component']
+                    )
                     st.dataframe(styled_status, use_container_width=True)
                     st.info(f"Number of missing components: {missing_count}")
                 else:
@@ -2089,6 +2106,9 @@ if uploaded_file is not None:
                     st.info("No maintenance data available for auxiliary engines.")
             except Exception as e:
                 st.error(f"Error displaying Maintenance Data: {str(e)}")
+
+            for ae_error in ae_processor.errors:
+                st.warning(ae_error)
         elif st.session_state.current_tab == 2:
             st.header("Machinery Location Analysis")
 
